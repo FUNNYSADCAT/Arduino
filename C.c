@@ -5,108 +5,14 @@ const int MOTOR_L_B = 12;
 const int MOTOR_R_A = 27;
 const int MOTOR_R_B = 14;
 
-const int SENSOR_COUNT = 5;
-int sensorMin[SENSOR_COUNT];
-int sensorMax[SENSOR_COUNT];
-bool INVERT_SENSOR = false;
-
-const int PWM_FREQ = 5000;
-const int PWM_RES = 8;
-
+const int THRESHOLD = 2000;
 const int BASE_SPEED = 150;
 const int MAX_SPEED = 255;
 
-const double Kp = 0.06;
-const double Ki = 0.0006;
-const double Kd = 0.8;
-const long INTEGRAL_LIMIT = 2000;
+const double Kp = 0.05;
+const double Kd = 0.5;
 
 long lastError = 0;
-double integral = 0;
-unsigned long lastPidTime = 0;
-
-unsigned long lastPrintTime = 0;
-const unsigned long PRINT_INTERVAL_MS = 200;
-
-const int LINE_LOST_THRESHOLD = 250;
-const int INTERSECTION_THRESHOLD = 700;
-
-void setup() {
-  Serial.begin(115200);
-
-  for (int i = 0; i < SENSOR_COUNT; i++) {
-    pinMode(sensorPins[i], INPUT);
-  }
-
-  ledcAttach(MOTOR_L_A, PWM_FREQ, PWM_RES);
-  ledcAttach(MOTOR_L_B, PWM_FREQ, PWM_RES);
-  ledcAttach(MOTOR_R_A, PWM_FREQ, PWM_RES);
-  ledcAttach(MOTOR_R_B, PWM_FREQ, PWM_RES);
-
-  setMotorSpeed(0, 0);
-  calibrateSensors();
-
-  lastPidTime = millis();
-}
-
-void calibrateSensors() {
-  for (int i = 0; i < SENSOR_COUNT; i++) {
-    sensorMin[i] = 4095;
-    sensorMax[i] = 0;
-  }
-
-  unsigned long start = millis();
-  while (millis() - start < 3000) {
-    for (int i = 0; i < SENSOR_COUNT; i++) {
-      int raw = analogRead(sensorPins[i]);
-      if (raw < sensorMin[i]) sensorMin[i] = raw;
-      if (raw > sensorMax[i]) sensorMax[i] = raw;
-    }
-    delay(10);
-  }
-}
-
-void readSensors(int out[SENSOR_COUNT]) {
-  for (int i = 0; i < SENSOR_COUNT; i++) {
-    int raw = analogRead(sensorPins[i]);
-    int norm = map(raw, sensorMin[i], sensorMax[i], 0, 1000);
-    norm = constrain(norm, 0, 1000);
-    out[i] = INVERT_SENSOR ? (1000 - norm) : norm;
-  }
-}
-
-bool computeError(int sensorValues[SENSOR_COUNT], long &error) {
-  long weightedSum = 0;
-  long total = 0;
-
-  for (int i = 0; i < SENSOR_COUNT; i++) {
-    weightedSum += (long)sensorValues[i] * (i * 1000L);
-    total += sensorValues[i];
-  }
-
-  if (total < LINE_LOST_THRESHOLD) {
-    error = lastError;
-    return false;
-  }
-
-  long position = weightedSum / total;
-  error = position - 2000;
-  return true;
-}
-
-double computePID(long error, unsigned long dt_ms) {
-  double dt = dt_ms / 1000.0;
-  if (dt <= 0) dt = 0.001;
-
-  integral += error * dt;
-  integral = constrain(integral, -INTEGRAL_LIMIT, INTEGRAL_LIMIT);
-
-  double derivative = (error - lastError) / dt;
-  double output = Kp * error + Ki * integral + Kd * derivative;
-
-  lastError = error;
-  return output;
-}
 
 void driveOneMotor(int pinA, int pinB, int speed) {
   speed = constrain(speed, -MAX_SPEED, MAX_SPEED);
@@ -124,28 +30,37 @@ void setMotorSpeed(int left, int right) {
   driveOneMotor(MOTOR_R_A, MOTOR_R_B, right);
 }
 
-void loop() {
-  int sensorValues[SENSOR_COUNT];
-  readSensors(sensorValues);
+void setup() {
+  Serial.begin(115200);
+  for (int i = 0; i < 5; i++) pinMode(sensorPins[i], INPUT);
+  ledcAttach(MOTOR_L_A, 5000, 8);
+  ledcAttach(MOTOR_L_B, 5000, 8);
+  ledcAttach(MOTOR_R_A, 5000, 8);
+  ledcAttach(MOTOR_R_B, 5000, 8);
+}
 
-  bool allOnLine = true;
-  for (int i = 0; i < SENSOR_COUNT; i++) {
-    if (sensorValues[i] < INTERSECTION_THRESHOLD) {
-      allOnLine = false;
-      break;
+void loop() {
+  int weights[5] = {-2, -1, 0, 1, 2};
+  long weightedSum = 0;
+  int count = 0;
+
+  for (int i = 0; i < 5; i++) {
+    int val = analogRead(sensorPins[i]);
+    if (val > THRESHOLD) {
+      weightedSum += weights[i];
+      count++;
     }
-  }
-  if (allOnLine) {
   }
 
   long error;
-  bool onLine = computeError(sensorValues, error);
+  if (count == 0) {
+    error = lastError;
+  } else {
+    error = weightedSum;
+  }
 
-  unsigned long now = millis();
-  unsigned long dt = now - lastPidTime;
-  lastPidTime = now;
-
-  double output = computePID(error, dt);
+  double output = Kp * error + Kd * (error - lastError);
+  lastError = error;
 
   int left = BASE_SPEED + (int)output;
   int right = BASE_SPEED - (int)output;
@@ -154,10 +69,5 @@ void loop() {
 
   setMotorSpeed(left, right);
 
-  if (now - lastPrintTime >= PRINT_INTERVAL_MS) {
-    lastPrintTime = now;
-    Serial.printf("error=%ld onLine=%d output=%.2f L=%d R=%d\n",
-                  error, onLine, output, left, right);
-  }
+  Serial.printf("error=%ld output=%.2f L=%d R=%d\n", error, output, left, right);
 }
-
