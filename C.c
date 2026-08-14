@@ -1,28 +1,43 @@
 #include <Arduino.h>
 
 /*
- * ESP32 Digital Line Follower
- * Sensor: Digital 5-channel IR
- * Motor Driver: L9110S / H-Bridge แบบ 2 พินต่อมอเตอร์
- *
- * Sensor:
- * D5 -> GPIO33
- * D4 -> GPIO25
- * D3 -> GPIO26
- * D2 -> GPIO16
- * D1 -> GPIO17
- *
- * Motor 1:
- * A -> GPIO13
- * B -> GPIO12
- *
- * Motor 2:
- * A -> GPIO27
- * B -> GPIO14
- */
+  ============================================================
+  ESP32 DIGITAL LINE FOLLOWER
+  ============================================================
+
+  Board:
+    ESP32 DevKit
+
+  Sensor:
+    Digital IR 5 ช่อง
+    LOW = เจอเส้นดำ
+
+  Sensor mapping:
+    D5 -> GPIO33  = ซ้ายสุด
+    D4 -> GPIO25
+    D3 -> GPIO26  = กลาง
+    D2 -> GPIO16
+    D1 -> GPIO17  = ขวาสุด
+
+  Motor Driver:
+    L9110S / H-Bridge แบบ 2 input ต่อมอเตอร์
+
+  Left Motor:
+    A -> GPIO13
+    B -> GPIO12
+
+  Right Motor:
+    A -> GPIO27
+    B -> GPIO14
+
+  PWM:
+    Arduino-ESP32 Core 3.x
+    ใช้ ledcAttach() + ledcWrite(pin, duty)
+*/
+
 
 // ============================================================
-// Pin Definitions
+// PIN DEFINITIONS
 // ============================================================
 
 // Sensor จากซ้าย -> ขวา
@@ -30,108 +45,134 @@ const int SENSOR_PINS[5] = {
   33, 25, 26, 16, 17
 };
 
-// Motor 1 = ซ้าย
-const int LEFT_MOTOR_A  = 13;
-const int LEFT_MOTOR_B  = 12;
+// Motor ซ้าย
+const int LEFT_MOTOR_A = 13;
+const int LEFT_MOTOR_B = 12;
 
-// Motor 2 = ขวา
+// Motor ขวา
 const int RIGHT_MOTOR_A = 27;
 const int RIGHT_MOTOR_B = 14;
 
 
 // ============================================================
-// Sensor Configuration
+// SENSOR CONFIGURATION
 // ============================================================
 
 // LOW = เจอเส้นดำ
-// ถ้าเซนเซอร์ของคุณกลับกัน ให้เปลี่ยนเป็น HIGH
+// ถ้าเซนเซอร์ทำงานกลับด้าน ให้เปลี่ยนเป็น HIGH
 const int LINE_DETECTED = LOW;
 
 
 // ============================================================
-// PWM Configuration
+// PWM CONFIGURATION
 // ============================================================
 
-const int PWM_FREQUENCY = 20000;
-const int PWM_RESOLUTION = 8;
+const uint32_t PWM_FREQUENCY = 20000;
+const uint8_t PWM_RESOLUTION = 8;
 
-const int LEFT_PWM_CHANNEL_A  = 0;
-const int LEFT_PWM_CHANNEL_B  = 1;
-const int RIGHT_PWM_CHANNEL_A = 2;
-const int RIGHT_PWM_CHANNEL_B = 3;
+// 8-bit PWM
+// 0   = หยุด
+// 255 = เต็มกำลัง
+const int MAX_SPEED = 255;
 
 
 // ============================================================
-// PID Configuration
+// LINE FOLLOWER CONFIGURATION
 // ============================================================
-
-const float Kp = 45.0;
-const float Ki = 0.0;
-const float Kd = 20.0;
 
 // ความเร็วพื้นฐาน
 const int BASE_SPEED = 150;
 
-// ความเร็วสูงสุด
-const int MAX_SPEED = 255;
 
-// จำกัด integral ป้องกัน integral windup
-const float INTEGRAL_LIMIT = 100.0;
+// ============================================================
+// PID CONFIGURATION
+// ============================================================
+
+// ปรับค่า PID ได้ตรงนี้
+const float Kp = 0.045;
+const float Ki = 0.000;
+const float Kd = 0.025;
+
+// จำกัด integral
+const float INTEGRAL_LIMIT = 5000.0;
 
 
 // ============================================================
-// Global Variables
+// GLOBAL VARIABLES
 // ============================================================
 
-float error = 0.0;
 float lastError = 0.0;
 float integral = 0.0;
 float derivative = 0.0;
-float pidOutput = 0.0;
 
-// ตำแหน่งล่าสุดที่ตรวจพบเส้น
+float lastKnownError = 0.0;
 float lastPosition = 2000.0;
 
-// ใช้ตอนหลุดเส้น
-float lastKnownError = 0.0;
-
-// เวลา PID ครั้งล่าสุด
 unsigned long lastPIDTime = 0;
-
-// Debug
 unsigned long lastDebugTime = 0;
-const unsigned long DEBUG_INTERVAL = 100;
 
 
 // ============================================================
-// Setup
+// SETUP
 // ============================================================
 
 void setup() {
+
   Serial.begin(115200);
 
-  // ตั้ง sensor เป็น input
+  // -------------------------
+  // Sensor
+  // -------------------------
+
   for (int i = 0; i < 5; i++) {
     pinMode(SENSOR_PINS[i], INPUT);
   }
 
-  // ตั้ง PWM สำหรับมอเตอร์
-  ledcSetup(LEFT_PWM_CHANNEL_A, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(LEFT_PWM_CHANNEL_B, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(RIGHT_PWM_CHANNEL_A, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(RIGHT_PWM_CHANNEL_B, PWM_FREQUENCY, PWM_RESOLUTION);
 
-  ledcAttachPin(LEFT_MOTOR_A, LEFT_PWM_CHANNEL_A);
-  ledcAttachPin(LEFT_MOTOR_B, LEFT_PWM_CHANNEL_B);
+  // -------------------------
+  // Motor PWM
+  // -------------------------
 
-  ledcAttachPin(RIGHT_MOTOR_A, RIGHT_PWM_CHANNEL_A);
-  ledcAttachPin(RIGHT_MOTOR_B, RIGHT_PWM_CHANNEL_B);
+  // Arduino-ESP32 Core 3.x
+  // channel จะถูกเลือกให้อัตโนมัติ
+  ledcAttach(
+    LEFT_MOTOR_A,
+    PWM_FREQUENCY,
+    PWM_RESOLUTION
+  );
 
+  ledcAttach(
+    LEFT_MOTOR_B,
+    PWM_FREQUENCY,
+    PWM_RESOLUTION
+  );
+
+  ledcAttach(
+    RIGHT_MOTOR_A,
+    PWM_FREQUENCY,
+    PWM_RESOLUTION
+  );
+
+  ledcAttach(
+    RIGHT_MOTOR_B,
+    PWM_FREQUENCY,
+    PWM_RESOLUTION
+  );
+
+
+  // หยุดมอเตอร์ก่อน
   setMotorSpeed(0, 0);
 
-  Serial.println("Digital Line Follower Starting...");
 
-  // Digital sensor ไม่สามารถ calibrate min/max แบบ analog ได้
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("ESP32 LINE FOLLOWER");
+  Serial.println("Digital Sensor");
+  Serial.println("Arduino-ESP32 Core 3.x");
+  Serial.println("================================");
+
+
+  // Calibration
   calibrateSensors();
 
   lastPIDTime = millis();
@@ -139,15 +180,17 @@ void setup() {
 
 
 // ============================================================
-// Calibration
+// CALIBRATION
 // ============================================================
 
-// Digital sensor ใช้ calibration เพื่อให้เซนเซอร์ปรับตัวก่อนเริ่ม
+// Digital sensor ไม่มีค่า analog min/max
+// จึงใช้ช่วงนี้อ่าน sensor เพื่อให้วงจรนิ่งก่อนเริ่มทำงาน
 void calibrateSensors() {
+
   Serial.println("Calibrating sensors...");
 
-  // อ่าน sensor หลายครั้งเพื่อให้วงจรนิ่ง
-  for (int i = 0; i < 50; i++) {
+  for (int i = 0; i < 100; i++) {
+
     for (int j = 0; j < 5; j++) {
       digitalRead(SENSOR_PINS[j]);
     }
@@ -160,86 +203,113 @@ void calibrateSensors() {
 
 
 // ============================================================
-// Sensor Reading
+// READ SENSORS
 // ============================================================
 
-// อ่าน sensor ทั้ง 5 ตัว และคืนตำแหน่ง 0-4000
-// ซ้ายสุด = 0
-// ซ้าย = 1000
-// กลาง = 2000
-// ขวา = 3000
-// ขวาสุด = 4000
+// อ่าน sensor ทั้ง 5 ตัว
+//
+// Position:
+// 0    = ซ้ายสุด
+// 1000 = ซ้าย
+// 2000 = กลาง
+// 3000 = ขวา
+// 4000 = ขวาสุด
+//
+// คืนค่า -1 ถ้าไม่มี sensor ตัวไหนเจอเส้น
 float readSensors() {
 
   const int weights[5] = {
-    0, 1000, 2000, 3000, 4000
+    0,
+    1000,
+    2000,
+    3000,
+    4000
   };
 
   long weightedSum = 0;
   int activeCount = 0;
 
+
   for (int i = 0; i < 5; i++) {
 
-    int value = digitalRead(SENSOR_PINS[i]);
+    int sensorValue = digitalRead(SENSOR_PINS[i]);
 
-    if (value == LINE_DETECTED) {
+    if (sensorValue == LINE_DETECTED) {
+
       weightedSum += weights[i];
       activeCount++;
     }
   }
 
-  // ไม่มี sensor ตัวไหนเจอเส้น
+
+  // ไม่เจอเส้น
   if (activeCount == 0) {
     return -1.0;
   }
 
+
+  // ถ้ามีหลาย sensor เจอเส้น
+  // ใช้ค่าเฉลี่ยตำแหน่ง
   return (float)weightedSum / activeCount;
 }
 
 
 // ============================================================
-// Compute Error
+// COMPUTE ERROR
 // ============================================================
 
-// คำนวณ error จากตำแหน่งของเส้นเทียบกับจุดกลาง 2000
+// จุดกลาง = 2000
+//
+// error < 0 = เส้นอยู่ทางซ้าย
+// error > 0 = เส้นอยู่ทางขวา
 float computeError(float position) {
 
   // หลุดเส้น
   if (position < 0) {
 
-    // ใช้ error ล่าสุดแทน
+    // ใช้ทิศทางล่าสุด
     return lastKnownError;
   }
 
+
   float currentError = position - 2000.0;
+
 
   lastKnownError = currentError;
   lastPosition = position;
+
 
   return currentError;
 }
 
 
 // ============================================================
-// PID Controller
+// PID CONTROLLER
 // ============================================================
 
-// คำนวณ PID และคืนค่า correction
+// คำนวณ PID
 float computePID(float currentError) {
 
   unsigned long now = millis();
 
-  float dt = (now - lastPIDTime) / 1000.0;
+  float dt =
+    (now - lastPIDTime) / 1000.0;
 
-  // ป้องกัน dt เป็น 0
+
   if (dt <= 0.0) {
     dt = 0.001;
   }
 
+
   lastPIDTime = now;
 
+
+  // -------------------------
   // Integral
+  // -------------------------
+
   integral += currentError * dt;
+
 
   // Anti-windup
   if (integral > INTEGRAL_LIMIT) {
@@ -250,78 +320,119 @@ float computePID(float currentError) {
     integral = -INTEGRAL_LIMIT;
   }
 
-  // Derivative
-  derivative = (currentError - lastError) / dt;
 
+  // -------------------------
+  // Derivative
+  // -------------------------
+
+  derivative =
+    (currentError - lastError) / dt;
+
+
+  // -------------------------
   // PID
+  // -------------------------
+
   float output =
-    (Kp * currentError) +
-    (Ki * integral) +
-    (Kd * derivative);
+      (Kp * currentError)
+    + (Ki * integral)
+    + (Kd * derivative);
+
 
   lastError = currentError;
+
 
   return output;
 }
 
 
 // ============================================================
-// Motor Control
+// SINGLE MOTOR CONTROL
 // ============================================================
 
-// ควบคุมมอเตอร์ซ้าย/ขวา
-// รองรับค่าติดลบเพื่อหมุนย้อนกลับ
+// ควบคุมมอเตอร์ 1 ตัว
+//
+// speed > 0 = เดินหน้า
+// speed < 0 = ถอยหลัง
+// speed = 0 = หยุด
 void setSingleMotor(
   int speed,
-  int channelA,
-  int channelB
+  int pinA,
+  int pinB
 ) {
 
-  speed = constrain(speed, -255, 255);
+  speed = constrain(
+    speed,
+    -MAX_SPEED,
+    MAX_SPEED
+  );
+
 
   if (speed > 0) {
 
     // เดินหน้า
-    ledcWrite(channelA, speed);
-    ledcWrite(channelB, 0);
+    ledcWrite(pinA, speed);
+    ledcWrite(pinB, 0);
 
-  } else if (speed < 0) {
+  }
+
+  else if (speed < 0) {
 
     // ถอยหลัง
-    ledcWrite(channelA, 0);
-    ledcWrite(channelB, -speed);
+    ledcWrite(pinA, 0);
+    ledcWrite(pinB, -speed);
 
-  } else {
+  }
+
+  else {
 
     // หยุด
-    ledcWrite(channelA, 0);
-    ledcWrite(channelB, 0);
+    ledcWrite(pinA, 0);
+    ledcWrite(pinB, 0);
   }
 }
 
 
-// ควบคุมมอเตอร์ทั้งสองข้าง
-void setMotorSpeed(int left, int right) {
+// ============================================================
+// MOTOR CONTROL
+// ============================================================
 
-  left = constrain(left, -MAX_SPEED, MAX_SPEED);
-  right = constrain(right, -MAX_SPEED, MAX_SPEED);
+// ควบคุมมอเตอร์ซ้ายและขวา
+void setMotorSpeed(
+  int left,
+  int right
+) {
+
+  left = constrain(
+    left,
+    -MAX_SPEED,
+    MAX_SPEED
+  );
+
+  right = constrain(
+    right,
+    -MAX_SPEED,
+    MAX_SPEED
+  );
+
 
   setSingleMotor(
     left,
-    LEFT_PWM_CHANNEL_A,
-    LEFT_PWM_CHANNEL_B
+    LEFT_MOTOR_A,
+    LEFT_MOTOR_B
   );
+
 
   setSingleMotor(
     right,
-    RIGHT_PWM_CHANNEL_A,
-    RIGHT_PWM_CHANNEL_B
+    RIGHT_MOTOR_A,
+    RIGHT_MOTOR_B
   );
 }
 
 
 // ============================================================
-// Intersection Detection
+// INTERSECTION DETECTION
 // ============================================================
 
 // ตรวจว่าทั้ง 5 sensor เจอเส้นพร้อมกันหรือไม่
@@ -329,85 +440,137 @@ bool isIntersection() {
 
   for (int i = 0; i < 5; i++) {
 
-    if (digitalRead(SENSOR_PINS[i]) != LINE_DETECTED) {
+    if (
+      digitalRead(SENSOR_PINS[i])
+      != LINE_DETECTED
+    ) {
+
       return false;
     }
   }
+
 
   return true;
 }
 
 
 // ============================================================
-// Debug
+// DEBUG
 // ============================================================
 
-// แสดงค่าทาง Serial ทุก 100 ms
+// แสดงข้อมูลทุก 100 ms
+// ไม่ print ทุก loop เพื่อไม่ให้ Serial หน่วงระบบ
 void debugOutput(
   float position,
-  float currentError,
-  float output
+  float error,
+  float pidOutput
 ) {
 
   unsigned long now = millis();
 
-  if (now - lastDebugTime < DEBUG_INTERVAL) {
+
+  if (
+    now - lastDebugTime
+    < 100
+  ) {
+
     return;
   }
 
+
   lastDebugTime = now;
 
-  Serial.print("Position: ");
-  Serial.print(position);
 
-  Serial.print(" | Error: ");
-  Serial.print(currentError);
+  Serial.print("Sensors: ");
 
-  Serial.print(" | PID: ");
-  Serial.print(output);
-
-  Serial.print(" | Sensors: ");
 
   for (int i = 0; i < 5; i++) {
-    Serial.print(digitalRead(SENSOR_PINS[i]));
+
+    Serial.print(
+      digitalRead(SENSOR_PINS[i])
+    );
+
 
     if (i < 4) {
       Serial.print(",");
     }
   }
 
+
+  Serial.print(" | Position: ");
+  Serial.print(position);
+
+
+  Serial.print(" | Error: ");
+  Serial.print(error);
+
+
+  Serial.print(" | PID: ");
+  Serial.print(pidOutput);
+
+
   Serial.println();
 }
 
 
 // ============================================================
-// Main Loop
+// MAIN LOOP
 // ============================================================
 
 void loop() {
 
-  // อ่านตำแหน่งเส้น
-  float position = readSensors();
+  // -------------------------
+  // อ่าน sensor
+  // -------------------------
 
+  float position =
+    readSensors();
+
+
+  // -------------------------
   // คำนวณ error
-  error = computeError(position);
+  // -------------------------
 
-  // ตรวจทางแยก / เส้นตัด
+  float error =
+    computeError(position);
+
+
+  // -------------------------
+  // Intersection
+  // -------------------------
+
   if (isIntersection()) {
 
     // TODO: intersection logic
 
   }
 
-  // คำนวณ PID
-  pidOutput = computePID(error);
 
+  // -------------------------
+  // PID
+  // -------------------------
+
+  float pidOutput =
+    computePID(error);
+
+
+  // -------------------------
   // Differential Drive
-  //
-  // error < 0 = เส้นอยู่ทางซ้าย
-  // error > 0 = เส้นอยู่ทางขวา
-  //
-  // ถ้าหุ่นเลี้ยวผิดด้าน ให้สลับ + กับ - ตรงนี้
+  // -------------------------
+
+  /*
+    PID เป็นบวก:
+      เส้นอยู่ทางขวา
+
+      ลดความเร็วล้อขวา
+      เพิ่มความเร็วล้อซ้าย
+
+    PID เป็นลบ:
+      เส้นอยู่ทางซ้าย
+
+      ลดความเร็วล้อซ้าย
+      เพิ่มความเร็วล้อขวา
+  */
 
   int leftSpeed =
     BASE_SPEED + (int)pidOutput;
@@ -415,22 +578,44 @@ void loop() {
   int rightSpeed =
     BASE_SPEED - (int)pidOutput;
 
+
+  // -------------------------
   // จำกัดความเร็ว
-  leftSpeed = constrain(
+  // -------------------------
+
+  leftSpeed =
+    constrain(
+      leftSpeed,
+      -MAX_SPEED,
+      MAX_SPEED
+    );
+
+
+  rightSpeed =
+    constrain(
+      rightSpeed,
+      -MAX_SPEED,
+      MAX_SPEED
+    );
+
+
+  // -------------------------
+  // สั่งมอเตอร์
+  // -------------------------
+
+  setMotorSpeed(
     leftSpeed,
-    -MAX_SPEED,
-    MAX_SPEED
+    rightSpeed
   );
 
-  rightSpeed = constrain(
-    rightSpeed,
-    -MAX_SPEED,
-    MAX_SPEED
-  );
 
-  // ส่งความเร็วไปมอเตอร์
-  setMotorSpeed(leftSpeed, rightSpeed);
-
+  // -------------------------
   // Debug
-  debugOutput(position, error, pidOutput);
+  // -------------------------
+
+  debugOutput(
+    position,
+    error,
+    pidOutput
+  );
 }
