@@ -1,46 +1,10 @@
 #include <Arduino.h>
 
-/*
-  ============================================================
-  ESP32 DIGITAL LINE FOLLOWER
-  ============================================================
-
-  Board:
-    ESP32 DevKit
-
-  Sensor:
-    Digital IR 5 ช่อง
-    LOW = เจอเส้นดำ
-
-  Sensor mapping:
-    D5 -> GPIO33  = ซ้ายสุด
-    D4 -> GPIO25
-    D3 -> GPIO26  = กลาง
-    D2 -> GPIO16
-    D1 -> GPIO17  = ขวาสุด
-
-  Motor Driver:
-    L9110S / H-Bridge แบบ 2 input ต่อมอเตอร์
-
-  Left Motor:
-    A -> GPIO13
-    B -> GPIO12
-
-  Right Motor:
-    A -> GPIO27
-    B -> GPIO14
-
-  PWM:
-    Arduino-ESP32 Core 3.x
-    ใช้ ledcAttach() + ledcWrite(pin, duty)
-*/
-
-
 // ============================================================
 // PIN DEFINITIONS
 // ============================================================
 
-// Sensor จากซ้าย -> ขวา
+// Sensor: ซ้าย -> ขวา
 const int SENSOR_PINS[5] = {
   33, 25, 26, 16, 17
 };
@@ -55,56 +19,362 @@ const int RIGHT_MOTOR_B = 14;
 
 
 // ============================================================
-// SENSOR CONFIGURATION
+// SENSOR CONFIG
 // ============================================================
 
 // LOW = เจอเส้นดำ
-// ถ้าเซนเซอร์ทำงานกลับด้าน ให้เปลี่ยนเป็น HIGH
+// ถ้าเซนเซอร์กลับด้าน ให้เปลี่ยนเป็น HIGH
 const int LINE_DETECTED = LOW;
-
-
-// ============================================================
-// PWM CONFIGURATION
-// ============================================================
-
-const uint32_t PWM_FREQUENCY = 20000;
-const uint8_t PWM_RESOLUTION = 8;
-
-// 8-bit PWM
-// 0   = หยุด
-// 255 = เต็มกำลัง
-const int MAX_SPEED = 255;
-
-
-// ============================================================
-// LINE FOLLOWER CONFIGURATION
-// ============================================================
-
-// ความเร็วพื้นฐาน
-const int BASE_SPEED = 150;
-
-
-// ============================================================
-// PID CONFIGURATION
-// ============================================================
-
-// ปรับค่า PID ได้ตรงนี้
-const float Kp = 0.045;
-const float Ki = 0.000;
-const float Kd = 0.025;
-
-// จำกัด integral
-const float INTEGRAL_LIMIT = 5000.0;
 
 
 // ============================================================
 // GLOBAL VARIABLES
 // ============================================================
 
-float lastError = 0.0;
-float integral = 0.0;
-float derivative = 0.0;
+// จำทิศทางล่าสุดที่เจอเส้น
+int lastDirection = 0;
 
+// -1 = ซ้าย
+//  0 = กลาง
+//  1 = ขวา
+
+unsigned long lastDebugTime = 0;
+
+
+// ============================================================
+// SETUP
+// ============================================================
+
+void setup() {
+
+  Serial.begin(115200);
+
+
+  // ตั้ง sensor
+  for (int i = 0; i < 5; i++) {
+    pinMode(SENSOR_PINS[i], INPUT);
+  }
+
+
+  // ตั้ง motor
+  pinMode(LEFT_MOTOR_A, OUTPUT);
+  pinMode(LEFT_MOTOR_B, OUTPUT);
+
+  pinMode(RIGHT_MOTOR_A, OUTPUT);
+  pinMode(RIGHT_MOTOR_B, OUTPUT);
+
+
+  // หยุดมอเตอร์
+  stopMotors();
+
+
+  Serial.println("ESP32 Digital Line Follower");
+  Serial.println("No LEDC / No PWM");
+
+
+  calibrateSensors();
+}
+
+
+// ============================================================
+// CALIBRATION
+// ============================================================
+
+// Digital sensor ไม่มี min/max analog
+// จึงใช้ calibration เพื่อรอให้ sensor พร้อม
+void calibrateSensors() {
+
+  Serial.println("Calibrating...");
+
+  for (int i = 0; i < 100; i++) {
+
+    for (int j = 0; j < 5; j++) {
+      digitalRead(SENSOR_PINS[j]);
+    }
+
+    delay(10);
+  }
+
+  Serial.println("Calibration complete.");
+}
+
+
+// ============================================================
+// READ SENSORS
+// ============================================================
+
+// อ่าน sensor ทั้ง 5 ตัว
+//
+// Sensor:
+// D5 = ซ้ายสุด
+// D4
+// D3 = กลาง
+// D2
+// D1 = ขวาสุด
+//
+// คืนค่า:
+// -2 = ซ้ายสุด
+// -1 = ซ้าย
+//  0 = กลาง
+//  1 = ขวา
+//  2 = ขวาสุด
+// 99 = ไม่เจอเส้น
+int readSensors() {
+
+  bool s0 =
+    digitalRead(SENSOR_PINS[0])
+    == LINE_DETECTED;
+
+  bool s1 =
+    digitalRead(SENSOR_PINS[1])
+    == LINE_DETECTED;
+
+  bool s2 =
+    digitalRead(SENSOR_PINS[2])
+    == LINE_DETECTED;
+
+  bool s3 =
+    digitalRead(SENSOR_PINS[3])
+    == LINE_DETECTED;
+
+  bool s4 =
+    digitalRead(SENSOR_PINS[4])
+    == LINE_DETECTED;
+
+
+  // ==========================================================
+  // กลาง
+  // ==========================================================
+
+  if (s2 && !s0 && !s1 && !s3 && !s4) {
+    return 0;
+  }
+
+
+  // ==========================================================
+  // ซ้าย
+  // ==========================================================
+
+  if (s1 || s0) {
+
+    lastDirection = -1;
+
+    if (s0) {
+      return -2;
+    }
+
+    return -1;
+  }
+
+
+  // ==========================================================
+  // ขวา
+  // ==========================================================
+
+  if (s3 || s4) {
+
+    lastDirection = 1;
+
+    if (s4) {
+      return 2;
+    }
+
+    return 1;
+  }
+
+
+  // ==========================================================
+  // ไม่เจอเส้น
+  // ==========================================================
+
+  return 99;
+}
+
+
+// ============================================================
+// MOTOR CONTROL
+// ============================================================
+
+// เดินหน้า
+void forward() {
+
+  digitalWrite(LEFT_MOTOR_A, HIGH);
+  digitalWrite(LEFT_MOTOR_B, LOW);
+
+  digitalWrite(RIGHT_MOTOR_A, HIGH);
+  digitalWrite(RIGHT_MOTOR_B, LOW);
+}
+
+
+// ============================================================
+// TURN LEFT
+// ============================================================
+
+void turnLeft() {
+
+  // ล้อซ้ายถอย
+  digitalWrite(LEFT_MOTOR_A, LOW);
+  digitalWrite(LEFT_MOTOR_B, HIGH);
+
+  // ล้อขวาเดินหน้า
+  digitalWrite(RIGHT_MOTOR_A, HIGH);
+  digitalWrite(RIGHT_MOTOR_B, LOW);
+}
+
+
+// ============================================================
+// TURN RIGHT
+// ============================================================
+
+void turnRight() {
+
+  // ล้อซ้ายเดินหน้า
+  digitalWrite(LEFT_MOTOR_A, HIGH);
+  digitalWrite(LEFT_MOTOR_B, LOW);
+
+  // ล้อขวาถอย
+  digitalWrite(RIGHT_MOTOR_A, LOW);
+  digitalWrite(RIGHT_MOTOR_B, HIGH);
+}
+
+
+// ============================================================
+// STOP
+// ============================================================
+
+void stopMotors() {
+
+  digitalWrite(LEFT_MOTOR_A, LOW);
+  digitalWrite(LEFT_MOTOR_B, LOW);
+
+  digitalWrite(RIGHT_MOTOR_A, LOW);
+  digitalWrite(RIGHT_MOTOR_B, LOW);
+}
+
+
+// ============================================================
+// DEBUG
+// ============================================================
+
+void debugSensors() {
+
+  unsigned long now = millis();
+
+  if (now - lastDebugTime < 100) {
+    return;
+  }
+
+  lastDebugTime = now;
+
+
+  Serial.print("Sensors: ");
+
+  for (int i = 0; i < 5; i++) {
+
+    Serial.print(
+      digitalRead(SENSOR_PINS[i])
+    );
+
+    if (i < 4) {
+      Serial.print(",");
+    }
+  }
+
+  Serial.println();
+}
+
+
+// ============================================================
+// LOOP
+// ============================================================
+
+void loop() {
+
+  int position = readSensors();
+
+
+  // ==========================================================
+  // กลางเจอเส้น
+  // ==========================================================
+
+  if (position == 0) {
+
+    forward();
+  }
+
+
+  // ==========================================================
+  // เส้นอยู่ซ้าย
+  // ==========================================================
+
+  else if (position == -1) {
+
+    turnLeft();
+  }
+
+
+  // ==========================================================
+  // เส้นอยู่ซ้ายสุด
+  // ==========================================================
+
+  else if (position == -2) {
+
+    turnLeft();
+  }
+
+
+  // ==========================================================
+  // เส้นอยู่ขวา
+  // ==========================================================
+
+  else if (position == 1) {
+
+    turnRight();
+  }
+
+
+  // ==========================================================
+  // เส้นอยู่ขวาสุด
+  // ==========================================================
+
+  else if (position == 2) {
+
+    turnRight();
+  }
+
+
+  // ==========================================================
+  // ไม่เจอเส้น
+  // ==========================================================
+
+  else if (position == 99) {
+
+    // ใช้ทิศทางล่าสุดในการหาเส้น
+
+    if (lastDirection < 0) {
+
+      turnLeft();
+
+    } else if (lastDirection > 0) {
+
+      turnRight();
+
+    } else {
+
+      stopMotors();
+    }
+  }
+
+
+  // ==========================================================
+  // Intersection
+  // ==========================================================
+
+  // TODO: intersection logic
+
+
+  debugSensors();
+}
 float lastKnownError = 0.0;
 float lastPosition = 2000.0;
 
