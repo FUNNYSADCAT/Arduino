@@ -7,12 +7,10 @@ const int MOTOR_R_B = 14;
 
 const int THRESHOLD = 2000;
 const int BASE_SPEED = 150;
+const int TURN_SPEED = 80;
 const int MAX_SPEED = 255;
 
-const double Kp = 0.05;
-const double Kd = 0.5;
-
-long lastError = 0;
+int lastTurn = 0;
 
 void driveOneMotor(int pinA, int pinB, int speed) {
   speed = constrain(speed, -MAX_SPEED, MAX_SPEED);
@@ -40,34 +38,34 @@ void setup() {
 }
 
 void loop() {
-  int weights[5] = {-2, -1, 0, 1, 2};
-  long weightedSum = 0;
-  int count = 0;
+  bool s0 = analogRead(sensorPins[0]) > THRESHOLD;
+  bool s1 = analogRead(sensorPins[1]) > THRESHOLD;
+  bool s2 = analogRead(sensorPins[2]) > THRESHOLD;
+  bool s3 = analogRead(sensorPins[3]) > THRESHOLD;
+  bool s4 = analogRead(sensorPins[4]) > THRESHOLD;
 
-  for (int i = 0; i < 5; i++) {
-    int val = analogRead(sensorPins[i]);
-    if (val > THRESHOLD) {
-      weightedSum += weights[i];
-      count++;
-    }
-  }
-
-  long error;
-  if (count == 0) {
-    error = lastError;
+  if (s2) {
+    setMotorSpeed(BASE_SPEED, BASE_SPEED);
+    lastTurn = 0;
+  } else if (s1) {
+    setMotorSpeed(BASE_SPEED - TURN_SPEED, BASE_SPEED);
+    lastTurn = -1;
+  } else if (s0) {
+    setMotorSpeed(0, BASE_SPEED);
+    lastTurn = -1;
+  } else if (s3) {
+    setMotorSpeed(BASE_SPEED, BASE_SPEED - TURN_SPEED);
+    lastTurn = 1;
+  } else if (s4) {
+    setMotorSpeed(BASE_SPEED, 0);
+    lastTurn = 1;
+  } else if (lastTurn < 0) {
+    setMotorSpeed(-BASE_SPEED, BASE_SPEED);
+  } else if (lastTurn > 0) {
+    setMotorSpeed(BASE_SPEED, -BASE_SPEED);
   } else {
-    error = weightedSum;
+    setMotorSpeed(BASE_SPEED, BASE_SPEED);
   }
 
-  double output = Kp * error + Kd * (error - lastError);
-  lastError = error;
-
-  int left = BASE_SPEED + (int)output;
-  int right = BASE_SPEED - (int)output;
-  left = constrain(left, -MAX_SPEED, MAX_SPEED);
-  right = constrain(right, -MAX_SPEED, MAX_SPEED);
-
-  setMotorSpeed(left, right);
-
-  Serial.printf("error=%ld output=%.2f L=%d R=%d\n", error, output, left, right);
+  Serial.printf("s=%d%d%d%d%d lastTurn=%d\n", s0, s1, s2, s3, s4, lastTurn);
 }
